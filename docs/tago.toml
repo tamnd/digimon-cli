@@ -1,0 +1,10 @@
+title       = "digimon"
+baseURL     = "https://digimon-cli.tamnd.com/"
+description = "A command line for the Digimon API."
+contentDir  = "content"
+outputDir   = "public"
+theme       = "tago-doks"
+syntaxHighlight = "true"
+
+[params]
+github = "https://github.com/tamnd/digimon-cli"

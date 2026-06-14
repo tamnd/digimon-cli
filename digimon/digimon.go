@@ -229,7 +229,7 @@ func (c *Client) fetchStubs(ctx context.Context, u string) ([]DigimonStub, error
 	}
 	out := make([]DigimonStub, 0, len(wl.Content))
 	for _, s := range wl.Content {
-		out = append(out, DigimonStub{ID: s.ID, Name: s.Name, Image: s.Image})
+		out = append(out, DigimonStub(s))
 	}
 	return out, nil
 }

@@ -215,8 +215,3 @@ func lastSegment(path string) string {
 	}
 	return ""
 }
-
-// mapErr converts library errors to the kit error kind with the right exit code.
-func mapErr(err error) error {
-	return err
-}

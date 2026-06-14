@@ -128,12 +128,20 @@ func TestSearchDigimon(t *testing.T) {
 
 func TestGetDigimon(t *testing.T) {
 	fixture := wireDigimon{
-		ID:          1,
-		Name:        "Agumon",
-		Images:      []struct{ Href string `json:"href"` }{{Href: "https://example.com/agumon.png"}},
-		Levels:      []struct{ Level string `json:"level"` }{{Level: "Child"}},
-		Types:       []struct{ Type string `json:"type"` }{{Type: "Reptile"}},
-		Attributes:  []struct{ Attribute string `json:"attribute"` }{{Attribute: "Vaccine"}},
+		ID:   1,
+		Name: "Agumon",
+		Images: []struct {
+			Href string `json:"href"`
+		}{{Href: "https://example.com/agumon.png"}},
+		Levels: []struct {
+			Level string `json:"level"`
+		}{{Level: "Child"}},
+		Types: []struct {
+			Type string `json:"type"`
+		}{{Type: "Reptile"}},
+		Attributes: []struct {
+			Attribute string `json:"attribute"`
+		}{{Attribute: "Vaccine"}},
 		ReleaseDate: "1997-06-26",
 		Descriptions: []struct {
 			Origin      string `json:"origin"`
@@ -209,17 +217,17 @@ type testClient struct {
 
 func (tc *testClient) ListDigimon(ctx context.Context, limit int) ([]DigimonStub, error) {
 	u := tc.base + "/api/v1/digimon?page=0&pageSize=" + itoa(limit)
-	return tc.Client.fetchStubs(ctx, u)
+	return tc.fetchStubs(ctx, u)
 }
 
 func (tc *testClient) SearchDigimon(ctx context.Context, name string, limit int) ([]DigimonStub, error) {
 	u := tc.base + "/api/v1/digimon?name=" + name + "&pageSize=" + itoa(limit)
-	return tc.Client.fetchStubs(ctx, u)
+	return tc.fetchStubs(ctx, u)
 }
 
 func (tc *testClient) GetDigimon(ctx context.Context, nameOrID string) (*Digimon, error) {
 	u := tc.base + "/api/v1/digimon/" + nameOrID
-	body, err := tc.Client.Get(ctx, u)
+	body, err := tc.Get(ctx, u)
 	if err != nil {
 		return nil, err
 	}

@@ -4,27 +4,24 @@ import (
 	"context"
 	"net/url"
 	"strings"
+	"unicode"
 
 	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/any-cli/kit/errs"
 )
 
-// domain.go exposes digimon as a kit Domain: a driver that a multi-domain
-// host (ant) enables with a single blank import,
+// domain.go exposes the Digimon API as a kit Domain: a driver that a
+// multi-domain host (ant) enables with a single blank import,
 //
 //	import _ "github.com/tamnd/digimon-cli/digimon"
 //
-// exactly as a database/sql program enables a driver with `import _
-// "github.com/lib/pq"`. The init below registers it; the host then dereferences
-// digimon:// URIs by routing to the operations Register installs. The same
-// Domain also builds the standalone digimon binary (see cli.NewApp), so the
-// binary and a host share one source of truth.
-//
-// This is the scaffold's starting point: one resource type, "page", served by a
-// resolver op and a list op. Add your real types here as you model the site.
+// The init below registers it; the host then dereferences digimon:// URIs by
+// routing to the operations Register installs. The same Domain also builds the
+// standalone digimon binary (see cli.NewApp), so the binary and a host share
+// one source of truth.
 func init() { kit.Register(Domain{}) }
 
-// Domain is the digimon driver. It carries no state; the per-run client is
+// Domain is the Digimon API driver. It carries no state; the per-run client is
 // built by the factory Register hands kit.
 type Domain struct{}
 
@@ -39,37 +36,35 @@ func (Domain) Info() kit.DomainInfo {
 			Short:  "A command line for the Digimon API.",
 			Long: `A command line for the Digimon API.
 
-digimon reads public digimon data over plain HTTPS, shapes it into
-clean records, and prints output that pipes into the rest of your tools. No API
-key, nothing to run alongside it.`,
+digimon reads public Digimon data from digi-api.com over plain HTTPS, shapes
+it into clean records, and prints output that pipes into the rest of your
+tools. No API key, nothing to run alongside it.`,
 			Site: Host,
 			Repo: "https://github.com/tamnd/digimon-cli",
 		},
 	}
 }
 
-// Register installs the client factory and every operation onto app. A resolver
-// op (Single) names its own record type and answers `ant get`; a List op
-// enumerates a parent resource's members and answers `ant ls`.
+// Register installs the client factory and every operation onto app.
 func (Domain) Register(app *kit.App) {
 	app.SetClient(newClient)
 
-	// Resolver op: one record per id, the home of `digimon page` and
-	// `ant get digimon://page/<id>`.
-	kit.Handle(app, kit.OpMeta{Name: "page", Group: "read", Single: true,
-		Summary: "Fetch a page by path or URL", URIType: "page", Resolver: true,
-		Args: []kit.Arg{{Name: "ref", Help: "page path or URL"}}}, getPage)
+	// list: first page of Digimon stubs.
+	kit.Handle(app, kit.OpMeta{Name: "list", Group: "read", List: true,
+		Summary: "List Digimon", URIType: "digimon"}, listDigimon)
 
-	// List op: members of a page, the home of `digimon links` and `ant ls`.
-	// It emits page stubs, so every listed member is itself an addressable
-	// digimon://page/ URI a host can follow.
-	kit.Handle(app, kit.OpMeta{Name: "links", Group: "read", List: true,
-		Summary: "List the pages a page links to", URIType: "page",
-		Args: []kit.Arg{{Name: "ref", Help: "page path or URL"}}}, listLinks)
+	// search: search by name, returns stubs.
+	kit.Handle(app, kit.OpMeta{Name: "search", Group: "read",
+		Summary: "Search Digimon by name",
+		Args:    []kit.Arg{{Name: "query", Help: "name search query"}}}, searchDigimon)
+
+	// digimon: full record by name or numeric ID.
+	kit.Handle(app, kit.OpMeta{Name: "digimon", Group: "read", Single: true,
+		Summary: "Fetch a Digimon by name or ID", URIType: "digimon", Resolver: true,
+		Args: []kit.Arg{{Name: "name-or-id", Help: "digimon name (agumon) or numeric ID"}}}, getDigimon)
 }
 
-// newClient builds the client from the host-resolved config, so a host and the
-// standalone binary pace and identify themselves the same way.
+// newClient builds the client from the host-resolved config.
 func newClient(_ context.Context, cfg kit.Config) (any, error) {
 	c := NewClient()
 	if cfg.UserAgent != "" {
@@ -88,86 +83,140 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 }
 
 // --- inputs ---
-//
-// Each handler takes a typed input struct. kit fills the fields from the tags:
-// kit:"arg" is a positional argument, kit:"flag,inherit" binds the framework's
-// shared flag of the same name, and kit:"inject" receives the client newClient
-// builds.
 
-type pageRef struct {
-	Ref    string  `kit:"arg" help:"page path or URL"`
+type listInput struct {
+	Limit  int     `kit:"flag,inherit" help:"max results" default:"20"`
 	Client *Client `kit:"inject"`
 }
 
-type listRef struct {
-	Ref    string  `kit:"arg" help:"page path or URL"`
-	Limit  int     `kit:"flag,inherit" help:"max results"`
+type searchInput struct {
+	Query  string  `kit:"arg" help:"name search query"`
+	Limit  int     `kit:"flag,inherit" help:"max results" default:"20"`
 	Client *Client `kit:"inject"`
+}
+
+type digimonInput struct {
+	NameOrID string  `kit:"arg" help:"digimon name (agumon) or numeric ID"`
+	Client   *Client `kit:"inject"`
 }
 
 // --- handlers ---
 
-func getPage(ctx context.Context, in pageRef, emit func(*Page) error) error {
-	p, err := in.Client.GetPage(ctx, pagePath(in.Ref))
+func listDigimon(ctx context.Context, in listInput, emit func(DigimonStub) error) error {
+	stubs, err := in.Client.ListDigimon(ctx, in.Limit)
 	if err != nil {
-		return mapErr(err)
+		return err
 	}
-	return emit(p)
-}
-
-func listLinks(ctx context.Context, in listRef, emit func(*Page) error) error {
-	pages, err := in.Client.PageLinks(ctx, pagePath(in.Ref), in.Limit)
-	if err != nil {
-		return mapErr(err)
-	}
-	for _, p := range pages {
-		if err := emit(p); err != nil {
+	for _, s := range stubs {
+		if err := emit(s); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// --- Resolver: the URI-native string functions, pure and network-free ---
-
-// Classify turns any accepted input — a bare path or a full digimon.com URL —
-// into the canonical (type, id), so `ant resolve` and `ant url` touch no network.
-func (Domain) Classify(input string) (uriType, id string, err error) {
-	id = pagePath(input)
-	if id == "" {
-		return "", "", errs.Usage("unrecognized digimon reference: %q", input)
+func searchDigimon(ctx context.Context, in searchInput, emit func(DigimonStub) error) error {
+	stubs, err := in.Client.SearchDigimon(ctx, in.Query, in.Limit)
+	if err != nil {
+		return err
 	}
-	return "page", id, nil
+	for _, s := range stubs {
+		if err := emit(s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func getDigimon(ctx context.Context, in digimonInput, emit func(*Digimon) error) error {
+	d, err := in.Client.GetDigimon(ctx, in.NameOrID)
+	if err != nil {
+		return err
+	}
+	return emit(d)
+}
+
+// --- Resolver: pure string functions, no network ---
+
+// Classify turns any accepted input into the canonical (type, id) pair.
+// A pure numeric string maps to ("id", input); a word-like string maps to
+// ("name", input). Full digi-api.com URLs are unwrapped first.
+func (Domain) Classify(input string) (uriType, id string, err error) {
+	input = strings.TrimSpace(input)
+	// Unwrap a full URL.
+	if u, parseErr := url.Parse(input); parseErr == nil &&
+		(u.Scheme == "http" || u.Scheme == "https") {
+		// Last path segment after /digimon/ prefix.
+		seg := lastSegment(u.Path)
+		if seg == "" {
+			return "", "", errs.Usage("unrecognized digimon reference: %q", input)
+		}
+		input = seg
+	}
+
+	if isNumeric(input) {
+		return "id", input, nil
+	}
+	if isNameLike(input) {
+		return "name", strings.ToLower(input), nil
+	}
+	return "", "", errs.Usage("unrecognized digimon reference: %q", input)
 }
 
 // Locate is the inverse: the live https URL for a (type, id).
 func (Domain) Locate(uriType, id string) (string, error) {
-	if uriType != "page" {
+	switch uriType {
+	case "id", "name":
+		return baseURL + "/api/v1/digimon/" + id, nil
+	case "digimon":
+		return baseURL + "/api/v1/digimon/" + id, nil
+	default:
 		return "", errs.Usage("digimon has no resource type %q", uriType)
 	}
-	return BaseURL + "/" + strings.Trim(id, "/"), nil
 }
 
 // --- helpers ---
 
-// pagePath turns any accepted input into the canonical page id: the path of a
-// full URL on this host, or a bare path with its slashes trimmed.
-func pagePath(input string) string {
-	input = strings.TrimSpace(input)
-	if u, err := url.Parse(input); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-		return strings.Trim(u.Path, "/")
+// isNumeric reports whether s is a non-empty string of ASCII digits.
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
 	}
-	return strings.Trim(input, "/")
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
-// mapErr converts a library error into the kit error kind that carries the right
-// exit code, so a host renders the same outcomes the standalone binary does. As
-// you add sentinel errors to the library, map them here, for example:
-//
-//	case errors.Is(err, ErrNotFound):
-//		return errs.NotFound("%s", err.Error())
-//	case errors.Is(err, ErrRateLimited):
-//		return errs.RateLimited("%s", err.Error())
+// isNameLike reports whether s looks like a Digimon name: letters, digits,
+// spaces, hyphens, parentheses, dots. Empty strings are rejected.
+func isNameLike(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) &&
+			r != ' ' && r != '-' && r != '(' && r != ')' && r != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+// lastSegment returns the last non-empty path segment of a URL path.
+func lastSegment(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if parts[i] != "" {
+			return parts[i]
+		}
+	}
+	return ""
+}
+
+// mapErr converts library errors to the kit error kind with the right exit code.
 func mapErr(err error) error {
 	return err
 }

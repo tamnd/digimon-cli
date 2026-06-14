@@ -1,35 +1,32 @@
 // Package digimon is the library behind the digimon command line:
-// the HTTP client, request shaping, and the typed data models for digimon.
+// the HTTP client, request shaping, and the typed data models for the
+// Digimon API at digi-api.com.
 //
-// The Client here is the spine every command shares. It sets a real
-// User-Agent, paces requests so a busy session stays polite, and retries the
-// transient failures (429 and 5xx) that any public site throws under load.
-// Build your endpoint calls and JSON decoding on top of it.
+// The Client sets a real User-Agent, paces requests so a busy session stays
+// polite, and retries transient failures (429 and 5xx). Build your endpoint
+// calls and JSON decoding on top of it.
 package digimon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
-	"strings"
+	"net/url"
 	"time"
 )
 
-// DefaultUserAgent identifies the client to digimon. A real, honest
-// User-Agent is both polite and the thing most likely to keep you unblocked.
+// DefaultUserAgent identifies the client to digi-api.com.
 const DefaultUserAgent = "digimon/dev (+https://github.com/tamnd/digimon-cli)"
 
-// Host is the site this client talks to, and the host the URI driver in
-// domain.go claims. The scaffold points it at digimon.com; change it once you
-// know the real endpoints you want to read.
-const Host = "digimon.com"
+// Host is the site this client talks to.
+const Host = "digi-api.com"
 
-// BaseURL is the root every request is built from.
-const BaseURL = "https://" + Host
+// baseURL is the root every API request is built from.
+const baseURL = "https://digi-api.com"
 
-// Client talks to digimon over HTTP.
+// Client talks to the Digimon API over HTTP.
 type Client struct {
 	HTTP      *http.Client
 	UserAgent string
@@ -40,20 +37,18 @@ type Client struct {
 	last time.Time
 }
 
-// NewClient returns a Client with sensible defaults: a 30s timeout, a 200ms
-// minimum gap between requests, and five retries on transient errors.
+// NewClient returns a Client with sensible defaults.
 func NewClient() *Client {
 	return &Client{
-		HTTP:      &http.Client{Timeout: 30 * time.Second},
+		HTTP:      &http.Client{Timeout: 15 * time.Second},
 		UserAgent: DefaultUserAgent,
 		Rate:      200 * time.Millisecond,
-		Retries:   5,
+		Retries:   3,
 	}
 }
 
 // Get fetches url and returns the response body. It paces and retries according
-// to the client's settings. The caller owns nothing extra; the body is read
-// fully and closed here.
+// to the client settings. The body is read fully and closed here.
 func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.Retries; attempt++ {
@@ -76,9 +71,9 @@ func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
 	return nil, fmt.Errorf("get %s: %w", url, lastErr)
 }
 
-func (c *Client) do(ctx context.Context, url string) (body []byte, retry bool, err error) {
+func (c *Client) do(ctx context.Context, rawURL string) (body []byte, retry bool, err error) {
 	c.pace()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, false, err
 	}
@@ -123,78 +118,169 @@ func backoff(attempt int) time.Duration {
 	return d
 }
 
-// Page is the scaffold's one example record: a single page, addressed by the
-// path that names it on digimon.com. It is a stand-in for the typed records you
-// will model from the real digimon endpoints. The kit struct tags make it
-// addressable as a resource URI (see domain.go): ID is the URI id, and Body is
-// the long text `digimon cat` and the Markdown export print.
-type Page struct {
-	ID    string `json:"id" kit:"id"`
-	URL   string `json:"url"`
-	Title string `json:"title,omitempty"`
-	Body  string `json:"body,omitempty" kit:"body"`
+// --- wire types (unexported, internal JSON shapes from digi-api.com) ---
+
+type wireDigimon struct {
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	XAntibody bool   `json:"xAntibody"`
+	Images    []struct {
+		Href string `json:"href"`
+	} `json:"images"`
+	Levels []struct {
+		Level string `json:"level"`
+	} `json:"levels"`
+	Types []struct {
+		Type string `json:"type"`
+	} `json:"types"`
+	Attributes []struct {
+		Attribute string `json:"attribute"`
+	} `json:"attributes"`
+	ReleaseDate  string `json:"releaseDate"`
+	Descriptions []struct {
+		Origin      string `json:"origin"`
+		Language    string `json:"language"`
+		Description string `json:"description"`
+	} `json:"descriptions"`
+	Skills []struct {
+		Skill string `json:"skill"`
+	} `json:"skills"`
+	NextEvolutions []struct {
+		Digimon string `json:"digimon"`
+	} `json:"nextEvolutions"`
+	PriorEvolutions []struct {
+		Digimon string `json:"digimon"`
+	} `json:"priorEvolutions"`
 }
 
-// GetPage fetches one page by its path (for example "wiki/Go") and returns it as
-// a record. The scaffold keeps a plain-text preview of the response as the body;
-// replace the parsing with the real fields once you know the endpoint's shape.
-func (c *Client) GetPage(ctx context.Context, path string) (*Page, error) {
-	path = strings.Trim(path, "/")
-	url := BaseURL + "/" + path
-	body, err := c.Get(ctx, url)
+type wireStub struct {
+	ID    int    `json:"id"`
+	Name  string `json:"name"`
+	Image string `json:"image"`
+}
+
+type wireList struct {
+	Content  []wireStub `json:"content"`
+	Pageable struct {
+		TotalElements int `json:"totalElements"`
+	} `json:"pageable"`
+}
+
+// --- output types ---
+
+// Digimon is the full record returned by the digimon command.
+type Digimon struct {
+	ID          int      `kit:"id" json:"id"`
+	Name        string   `json:"name"`
+	Level       string   `json:"level"`
+	Type        string   `json:"type"`
+	Attribute   string   `json:"attribute"`
+	Description string   `json:"description" kit:"body"`
+	ReleaseDate string   `json:"release_date"`
+	Image       string   `json:"image"`
+	Skills      []string `json:"skills"`
+	NextEvos    []string `json:"next_evolutions"`
+	PriorEvos   []string `json:"prior_evolutions"`
+}
+
+// DigimonStub is the lightweight record returned by list and search.
+type DigimonStub struct {
+	ID    int    `kit:"id" json:"id"`
+	Name  string `json:"name"`
+	Image string `json:"image"`
+}
+
+// --- client methods ---
+
+// ListDigimon returns up to limit Digimon stubs from the first page.
+func (c *Client) ListDigimon(ctx context.Context, limit int) ([]DigimonStub, error) {
+	u := fmt.Sprintf("%s/api/v1/digimon?page=0&pageSize=%d", baseURL, limit)
+	return c.fetchStubs(ctx, u)
+}
+
+// SearchDigimon returns up to limit Digimon stubs matching name.
+func (c *Client) SearchDigimon(ctx context.Context, name string, limit int) ([]DigimonStub, error) {
+	u := fmt.Sprintf("%s/api/v1/digimon?name=%s&pageSize=%d", baseURL, url.QueryEscape(name), limit)
+	return c.fetchStubs(ctx, u)
+}
+
+// GetDigimon fetches full details for a single Digimon by name or numeric ID.
+func (c *Client) GetDigimon(ctx context.Context, nameOrID string) (*Digimon, error) {
+	u := fmt.Sprintf("%s/api/v1/digimon/%s", baseURL, url.PathEscape(nameOrID))
+	body, err := c.Get(ctx, u)
 	if err != nil {
 		return nil, err
 	}
-	return &Page{ID: path, URL: url, Title: path, Body: pageText(body)}, nil
+	var w wireDigimon
+	if err := json.Unmarshal(body, &w); err != nil {
+		return nil, fmt.Errorf("decode digimon: %w", err)
+	}
+	return convertDigimon(w), nil
 }
 
-// PageLinks fetches a page and returns the same-host pages it links to, as page
-// stubs. It shows the member-listing pattern the URI driver relies on: every
-// stub carries enough (an id and a URL) to be addressed and followed on its own.
-func (c *Client) PageLinks(ctx context.Context, path string, limit int) ([]*Page, error) {
-	path = strings.Trim(path, "/")
-	body, err := c.Get(ctx, BaseURL+"/"+path)
+func (c *Client) fetchStubs(ctx context.Context, u string) ([]DigimonStub, error) {
+	body, err := c.Get(ctx, u)
 	if err != nil {
 		return nil, err
 	}
-	var out []*Page
-	seen := map[string]bool{}
-	for _, p := range linkPaths(body) {
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, &Page{ID: p, URL: BaseURL + "/" + p})
-		if limit > 0 && len(out) >= limit {
-			break
-		}
+	var wl wireList
+	if err := json.Unmarshal(body, &wl); err != nil {
+		return nil, fmt.Errorf("decode list: %w", err)
+	}
+	out := make([]DigimonStub, 0, len(wl.Content))
+	for _, s := range wl.Content {
+		out = append(out, DigimonStub{ID: s.ID, Name: s.Name, Image: s.Image})
 	}
 	return out, nil
 }
 
-var (
-	hrefRE = regexp.MustCompile(`href="(/[^":#?]+)"`)
-	tagRE  = regexp.MustCompile(`<[^>]+>`)
-)
+// --- conversion ---
 
-// linkPaths pulls the relative link targets out of an HTML response, so a list
-// op can turn each into an addressable page stub.
-func linkPaths(body []byte) []string {
-	var out []string
-	for _, m := range hrefRE.FindAllSubmatch(body, -1) {
-		if p := strings.Trim(string(m[1]), "/"); p != "" {
-			out = append(out, p)
-		}
+func convertDigimon(w wireDigimon) *Digimon {
+	d := &Digimon{
+		ID:          w.ID,
+		Name:        w.Name,
+		Description: extractDesc(w.Descriptions),
+		ReleaseDate: w.ReleaseDate,
 	}
-	return out
+	if len(w.Images) > 0 {
+		d.Image = w.Images[0].Href
+	}
+	if len(w.Levels) > 0 {
+		d.Level = w.Levels[0].Level
+	}
+	if len(w.Types) > 0 {
+		d.Type = w.Types[0].Type
+	}
+	if len(w.Attributes) > 0 {
+		d.Attribute = w.Attributes[0].Attribute
+	}
+	for _, s := range w.Skills {
+		d.Skills = append(d.Skills, s.Skill)
+	}
+	for _, e := range w.NextEvolutions {
+		d.NextEvos = append(d.NextEvos, e.Digimon)
+	}
+	for _, e := range w.PriorEvolutions {
+		d.PriorEvos = append(d.PriorEvos, e.Digimon)
+	}
+	return d
 }
 
-// pageText reduces an HTML response to a short plain-text preview, a stand-in
-// for the typed extract a real endpoint would hand you.
-func pageText(body []byte) string {
-	s := strings.Join(strings.Fields(tagRE.ReplaceAllString(string(body), " ")), " ")
-	if len(s) > 500 {
-		s = s[:500]
+func extractDesc(descs []struct {
+	Origin      string `json:"origin"`
+	Language    string `json:"language"`
+	Description string `json:"description"`
+}) string {
+	for _, d := range descs {
+		if d.Language == "en_us" && d.Origin == "Reference Book" {
+			return d.Description
+		}
 	}
-	return s
+	for _, d := range descs {
+		if d.Language == "en_us" {
+			return d.Description
+		}
+	}
+	return ""
 }
